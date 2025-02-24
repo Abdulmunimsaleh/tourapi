@@ -1,11 +1,13 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from typing import Dict
+from rapidfuzz import process
 
 app = FastAPI()
 
-# Updated tour data with specific dates
+# Sample tour data
 TOUR_DATA = {
-    "Kenya": {
+     "Kenya": {
         "January": [
             {"tour_name": "Masai Mara Safari", "duration": 3, "price_per_person": 500, "highlights": ["Big Five", "Game Drives"], "destination": "Masai Mara", "dates": ["15th - 20th January"]},
             {"tour_name": "Amboseli Adventure", "duration": 2, "price_per_person": 400, "highlights": ["Mount Kilimanjaro", "Elephants"], "destination": "Amboseli National Park", "dates": ["22nd - 25th January"]}
@@ -47,66 +49,60 @@ TOUR_DATA = {
             {"tour_name": "Drakensberg Mountains Hike", "duration": 4, "price_per_person": 600, "highlights": ["Scenic Trails", "Nature"], "destination": "Drakensberg Mountains", "dates": ["22nd - 26th March"]}
         ]
     }
+    
 }
 
-@app.get("/tours")
-def get_tours(
-    full_name: str = Query(..., description="Your full name"),
-    country: str = Query(..., description="Country you want to tour (Kenya, Tanzania, South Africa)"),
-    month: str = Query(..., description="Month you want to travel (January, February, March)")
-):
-    country = country.title()
-    month = month.title()
+# Normalize keys to lowercase
+TOUR_DATA = {k.lower(): {m.lower(): v for m, v in v.items()} for k, v in TOUR_DATA.items()}
 
-    if country not in TOUR_DATA:
-        return {"error": "Invalid country. Choose from Kenya, Tanzania, or South Africa."}
+# List of valid countries and months in lowercase
+VALID_COUNTRIES = list(TOUR_DATA.keys())
+VALID_MONTHS = list(set(month for country in TOUR_DATA.values() for month in country.keys()))
 
-    if month not in TOUR_DATA[country]:
-        return {"error": "Invalid month. Choose from January, February, or March."}
-
-    available_tours = TOUR_DATA[country][month]
-
-    return {
-        "full_name": full_name,
-        "country": country,
-        "month": month,
-        "tours_available": available_tours
-    }
-
-class TourBooking(BaseModel):
-    full_name: str
-    passport_or_id: str
+class TourRequest(BaseModel):
     country: str
     month: str
-    tour_name: str
-    number_of_people: int
+
+def get_best_match(user_input: str, choices: list, threshold: int = 80):
+    """Find the closest match for user input in a list of valid choices."""
+    user_input = user_input.lower()
+    match, score, _ = process.extractOne(user_input, choices)
+    return match if score >= threshold else None
+
+@app.get("/tours")
+def get_tour(country: str, month: str):
+    country = country.lower()
+    month = month.lower()
+    
+    corrected_country = get_best_match(country, VALID_COUNTRIES)
+    corrected_month = get_best_match(month, VALID_MONTHS)
+    
+    if not corrected_country:
+        raise HTTPException(status_code=400, detail=f"Invalid country: '{country}'. Please enter a valid country.")
+    if not corrected_month:
+        raise HTTPException(status_code=400, detail=f"Invalid month: '{month}'. Please enter a valid month.")
+    
+    tour_info = TOUR_DATA.get(corrected_country, {}).get(corrected_month)
+    if tour_info:
+        return {"country": corrected_country.capitalize(), "month": corrected_month.capitalize(), "tour": tour_info}
+    else:
+        raise HTTPException(status_code=404, detail="No tour available for this selection.")
 
 @app.post("/book-tour")
-def book_tour(booking: TourBooking):
-    country = booking.country.title()
-    month = booking.month.title()
-
-    if country not in TOUR_DATA or month not in TOUR_DATA[country]:
-        return {"error": "Invalid country or month. Choose from Kenya, Tanzania, or South Africa in January, February, or March."}
-
-    selected_tour = next((tour for tour in TOUR_DATA[country][month] if tour["tour_name"] == booking.tour_name), None)
-
-    if not selected_tour:
-        return {"error": "Invalid tour name. Please choose from available tours."}
-
-    total_cost = selected_tour["price_per_person"] * booking.number_of_people
-
-    return {
-        "message": "Tour booking successful!",
-        "full_name": booking.full_name,
-        "passport_or_id": booking.passport_or_id,
-        "country": country,
-        "month": month,
-        "tour_name": booking.tour_name,
-        "destination": selected_tour["destination"],
-        "tour_dates": selected_tour["dates"],
-        "number_of_people": booking.number_of_people,
-        "price_per_person": selected_tour["price_per_person"],
-        "total_cost": total_cost,
-        "currency": "USD"
-    }
+def book_tour(request: TourRequest):
+    request_country = request.country.lower()
+    request_month = request.month.lower()
+    
+    corrected_country = get_best_match(request_country, VALID_COUNTRIES)
+    corrected_month = get_best_match(request_month, VALID_MONTHS)
+    
+    if not corrected_country:
+        raise HTTPException(status_code=400, detail=f"Invalid country: '{request.country}'. Please enter a valid country.")
+    if not corrected_month:
+        raise HTTPException(status_code=400, detail=f"Invalid month: '{request.month}'. Please enter a valid month.")
+    
+    tour_info = TOUR_DATA.get(corrected_country, {}).get(corrected_month)
+    if tour_info:
+        return {"message": "Tour booked successfully!", "country": corrected_country.capitalize(), "month": corrected_month.capitalize(), "tour": tour_info}
+    else:
+        raise HTTPException(status_code=404, detail="No tour available for this selection.")
